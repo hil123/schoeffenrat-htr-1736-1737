@@ -1,0 +1,77 @@
+name: v3-hanse
+on:
+  workflow_run:
+    workflows: ["htr"]
+    types: [completed]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: |
+          python3 - << 'PY' >> "$GITHUB_OUTPUT"
+          import json
+          pri = [(42,240,256),(43,1,24),(43,25,48),(43,49,72),(43,73,96),(42,257,282),(42,283,308),(43,279,301),(43,302,323),(42,97,120)]
+          cov = {(v,n) for v,a,b in pri for n in range(a,b+1)}
+          inc = [{"vol":v,"vues":f"{a}-{b}"} for v,a,b in pri]
+          for vol,last in ((42,308),(43,323)):
+              rest = [n for n in range(1,last+1) if (vol,n) not in cov]
+              for i in range(0,len(rest),24):
+                  part = rest[i:i+24]
+                  inc.append({"vol":vol,"vues":",".join(map(str,part))})
+          print("matrix=" + json.dumps({"include": inc}))
+          PY
+  run:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-hanse-v3
+      - name: install
+        run: |
+          pip install -q torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -q kraken==5.3.0 transformers==4.46.3 rapidfuzz opencv-python-headless requests sentencepiece
+      - name: htr
+        run: python run_chunk.py --vol ${{ matrix.vol }} --vues "${{ matrix.vues }}" --models "B=fgho/trocr-hanseXVII-kurrent" --out out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v3-${{ matrix.vol }}-${{ strategy.job-index }}
+          path: out
+  merge:
+    needs: run
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+      - run: |
+          mkdir -p v3/results/lines v3/results/crops
+          find art -name 'lines_*.jsonl' -exec cp {} v3/results/lines/ \;
+          find art -path '*crops*' -name '*.jpg' -exec cp {} v3/results/crops/ \;
+          cd v3 && python ../merge.py && cd ..
+          git config user.name "htr-bot"; git config user.email "htr-bot@users.noreply.github.com"
+          git add v3
+          git commit -m "v3 hanse results run ${{ github.run_id }}" || echo "nothing to commit"
+          for i in 1 2 3 4 5; do git pull --rebase && git push && break; sleep 10; done
