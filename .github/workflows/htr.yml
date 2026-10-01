@@ -1,0 +1,79 @@
+name: htr
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "test = vol. 43 vues 31,38 ; full = tout"
+        default: "test"
+permissions:
+  contents: write
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: |
+          python3 - << 'PY' >> "$GITHUB_OUTPUT"
+          import json
+          mode = "${{ github.event.inputs.mode }}"
+          if mode == "test":
+              inc = [{"vol": 43, "vues": "31,38"}]
+          else:
+              inc = []
+              for vol, last in ((42, 308), (43, 323)):
+                  for s in range(1, last + 1, 24):
+                      inc.append({"vol": vol, "vues": f"{s}-{min(last, s + 23)}"})
+          print("matrix=" + json.dumps({"include": inc}))
+          PY
+  run:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-trocr-kurrent-v1
+      - name: install
+        run: |
+          pip install -q torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -q kraken==5.3.0 transformers==4.46.3 rapidfuzz opencv-python-headless requests sentencepiece
+          python -c "import torch, transformers, kraken; print(torch.__version__, transformers.__version__)"
+      - name: htr
+        run: python run_chunk.py --vol ${{ matrix.vol }} --vues "${{ matrix.vues }}" --out out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: out-${{ matrix.vol }}-${{ strategy.job-index }}
+          path: out
+  merge:
+    needs: run
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+      - run: |
+          mkdir -p results/lines results/crops
+          find art -name 'lines_*.jsonl' -exec cp {} results/lines/ \;
+          find art -path '*crops*' -name '*.jpg' -exec cp {} results/crops/ \;
+          python merge.py
+          git config user.name "htr-bot"; git config user.email "htr-bot@users.noreply.github.com"
+          git add results
+          git commit -m "HTR results (${{ github.event.inputs.mode }}) run ${{ github.run_id }}" || echo "nothing to commit"
+          for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done
