@@ -1,7 +1,8 @@
 # Résumé HTR
 
-Lignes : 131
+Lignes : 42144
 
-- vol. 43 : 2 vues lues (min 31, max 38)
+- vol. 42 : 308 vues lues (min 1, max 308)
+- vol. 43 : 323 vues lues (min 1, max 323)
 
-Segmentation : {'kraken': 131}
+Segmentation : {'kraken': 42144}
